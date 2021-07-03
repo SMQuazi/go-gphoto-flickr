@@ -1,0 +1,19 @@
+{
+	"albums": [
+		{
+			"photo_count": "41",
+			"id": "72157714784112406",
+			"url": "https://www.flickr.com/photos/likwidsage/albums/72157714784112406",
+			"title": "Nora's 1st B-day",
+			"description": "",
+			"view_count": "0",
+			"created": "1592609217",
+			"last_updated": "1592609220",
+			"cover_photo": "https://www.flickr.com/photos/likwidsage/50024138266",
+			"photos": [
+				"50024138366",
+				"50024138266"
+			]
+		}
+	]
+}
