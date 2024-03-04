@@ -9,56 +9,45 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/pkg/browser"
 
 	gphotos "github.com/gphotosuploader/google-photos-api-client-go/v2"
+	"github.com/gphotosuploader/google-photos-api-client-go/v2/albums"
 	"golang.org/x/oauth2"
 )
 
-type Config struct {
-	PhotoPath     string `json:"PhotoPath"`
-	GPhotoAPIPath string `json:"GPhotoAPIPath"`
+type FilePaths struct {
+	PhotoDirPath       string `json:"PhotoDirPath"`
+	GPhotoAuthJsonPath string `json:"GPhotoAuthJsonPath"`
+	FlickrJsonPath     string `json:"FlickrJsonPath"`
 }
 
-type GPhotoApi struct {
-	Installed Installed `json:"installed"`
-}
-type Installed struct {
-	ClientID                string   `json:"client_id"`
-	ProjectID               string   `json:"project_id"`
-	AuthURI                 string   `json:"auth_uri"`
-	TokenURI                string   `json:"token_uri"`
-	AuthProviderX509CertURL string   `json:"auth_provider_x509_cert_url"`
-	RedirectUris            []string `json:"redirect_uris"`
+// Check the error and panic, if any
+func CheckError(e error) {
+	if e != nil {
+		panic(e)
+	}
 }
 
-func SetEnvironment() (Config, GPhotoApi) {
+// Reads `./config.json` to grab all necessary paths
+func GetAppConfig() FilePaths {
 	ConfigByte, err := ioutil.ReadFile("./config.json")
 	CheckError(err)
 
-	var config Config
+	var config FilePaths
 	CheckError(json.Unmarshal(ConfigByte, &config))
 
-	gPhotoByte, err := ioutil.ReadFile(config.GPhotoAPIPath)
-	CheckError(err)
-	s := string(gPhotoByte)
-	fmt.Println(s)
-
-	var gPhotoApi GPhotoApi
-	jsonErr := json.Unmarshal(gPhotoByte, &gPhotoApi)
-	if jsonErr != nil {
-		panic(jsonErr)
-	}
-	s = string(gPhotoByte)
-	fmt.Println(s)
-
-	return config, gPhotoApi
+	return config
 }
 
-func FindFiles(pattern string, root string) ([]string, error) {
+// Find files in the `rootDir` (and sub directories) that match the `searchPattern`
+func FindFiles(searchPattern string, rootDir string) ([]string, error) {
 	var matchedFiles []string
 
-	filepath.WalkDir(root, func(path string, dir fs.DirEntry, err error) error {
-		matched, matchErr := filepath.Match("*"+pattern+"*", filepath.Base(path))
+	filepath.WalkDir(rootDir, func(path string, dir fs.DirEntry, err error) error {
+		matched, matchErr := filepath.Match("*"+searchPattern+"*", filepath.Base(path))
 		if matchErr != nil {
 			return matchErr
 		}
@@ -71,43 +60,14 @@ func FindFiles(pattern string, root string) ([]string, error) {
 	return matchedFiles, nil
 }
 
-func main() {
-	config, gphotoinfo := SetEnvironment()
-	albums := ReadFlickrAlbums("./albums.json")
+// Sorts pictures in photoDir from flickr archive download into
+// albums based on the albums.json included in the
+// download
+func SortLocalFlickrAlbums(photoDir string, FlickrJsonPath string) {
 
-	ctx := context.Background()
-	conf := &oauth2.Config{
-		ClientID:     gphotoinfo.Installed.ClientID,
-		ClientSecret: "EL4Z3wQNZNaBz25SS5eOD8Qj",
-		Scopes: []string{
-			"https://www.googleapis.com/auth/photoslibrary.appendonly",
-			"https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
-		},
-		Endpoint: oauth2.Endpoint{
-			AuthURL:  gphotoinfo.Installed.AuthURI,
-			TokenURL: gphotoinfo.Installed.TokenURI,
-		},
-		RedirectURL: gphotoinfo.Installed.RedirectUris[0],
-	}
+	// Go through albums in the Flickr JSON
+	albums := ReadFlickrAlbums(FlickrJsonPath)
 
-	var code string
-	fmt.Printf("Access URI: %s\n", conf.AuthCodeURL("state", oauth2.AccessTypeOffline))
-	fmt.Print("input: ")
-	_, err := fmt.Scan(&code)
-	CheckError(err)
-
-	fmt.Println("Creating token")
-	tok, err := conf.Exchange(ctx, code)
-	CheckError(err)
-
-	fmt.Println("Creating client")
-	tc := conf.Client(ctx, tok)
-
-	// Use authenticated http to start
-	client, err := gphotos.NewClient(tc)
-	CheckError(err)
-
-	// Sift through albums in JSON
 	for _, album := range albums.Albums {
 		fmt.Println(album.Title)
 
@@ -118,34 +78,130 @@ func main() {
 		}
 		safeAlbumTitle = strings.Trim(safeAlbumTitle, " ")
 
-		fmt.Printf("Creating album %s\n", safeAlbumTitle)
-		gPhotoAlbum, err := client.Albums.Create(ctx, safeAlbumTitle)
-		CheckError(err)
-
 		// Create the folder if needed
-		destDir := filepath.Join(config.PhotoPath, safeAlbumTitle)
+		destDir := filepath.Join(photoDir, safeAlbumTitle)
 		os.Mkdir(destDir, os.ModeDir)
 
+		// Read through photos in the album
 		for _, photo := range album.Photos {
-			// Search for files
 			fmt.Printf("searching for %s...", photo)
-			files, _ := FindFiles(photo, config.PhotoPath)
+			files, _ := FindFiles(photo, photoDir)
 
+			// If single file is matched
 			if len(files) == 1 {
 				fmt.Printf("found %d. %s\n", len(files), files)
 				destFile := filepath.Join(destDir, filepath.Base(files[0]))
 
-				// Move files if found
-				fmt.Printf("  Moving to %s\n", destFile)
+				// Move the file
+				fmt.Printf("  Moving to %s...", destFile)
 				CheckError(os.Rename(files[0], destFile))
-
-				// Then upload
-				fmt.Println("  Uploading $s", destFile)
-				mediaItem, err := client.UploadFileToAlbum(ctx, gPhotoAlbum.ID, destFile)
-				CheckError(err)
-				fmt.Printf("  done. (%s)", mediaItem.ProductURL)
-
+				fmt.Print("  done.\n", destFile)
 			}
 		}
 	}
+}
+
+type ftgAlbums []albums.Album
+
+// Checks whether an album with albumName exists
+func (f ftgAlbums) ContainsAlbumNamed(albumName string) bool {
+	for _, a := range f {
+		if a.Title == albumName {
+			return true
+		}
+	}
+
+	return false
+}
+
+// Creates an album if it doesn't exist, or finds it if it does
+func CreateAlbum(client gphotos.Client, string name) {
+
+}
+
+// Creates a folder & image structure on Google Photos
+// mirroring one from a photoPath using gPhotoInfo to authenticate
+func FromPCtoGPhotos(photoPath string, gPhotoInfo GPhotoAuth) error {
+	ctx := context.Background()
+	conf := &oauth2.Config{
+		ClientID:     gPhotoInfo.Installed.ClientID,
+		ClientSecret: "EL4Z3wQNZNaBz25SS5eOD8Qj",
+		Scopes: []string{
+			"https://www.googleapis.com/auth/photoslibrary.appendonly",
+			"https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
+		},
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  gPhotoInfo.Installed.AuthURI,
+			TokenURL: gPhotoInfo.Installed.TokenURI,
+		},
+		RedirectURL: gPhotoInfo.Installed.RedirectUris[0],
+	}
+
+	var code string
+	browser.OpenURL(conf.AuthCodeURL("state", oauth2.AccessTypeOffline))
+	fmt.Print("Paste code from Google now: ")
+	_, err := fmt.Scanln(&code)
+	if err != nil {
+		return err
+	}
+
+	tok, err := conf.Exchange(ctx, code)
+	if err != nil {
+		return err
+	}
+	tc := conf.Client(ctx, tok)
+	client, err := gphotos.NewClient(tc)
+	if err != nil {
+		return err
+	}
+
+	// Get list of albums to check against to avoid creating duplicates
+	existingAlbums, err := client.Albums.List(ctx)
+	ftgExistingAlbums := ftgAlbums(existingAlbums)
+	if err != nil {
+		return err
+	}
+
+	defaultAlbumName := "Flickr Unsorted " + time.Now().Format("yyyyMMddHHmm")
+	filepath.WalkDir(photoPath, func(path string, entry fs.DirEntry, err error) error {
+
+		// Get parent folder of each files
+		relPath, err := filepath.Rel(photoPath, path)
+		fmt.Println(relPath)
+		localParentName, _ := filepath.Split(relPath)
+		if localParentName == "" {
+			localParentName = defaultAlbumName
+		}
+
+		var gPhotoAlbum *albums.Album
+		if ftgExistingAlbums.ContainsAlbumNamed(localParentName) {
+			// If it exists in gPhotos, use it
+			gPhotoAlbum, err = client.Albums.GetByTitle(ctx, localParentName)
+
+		} else {
+			// if it doesn't, create one to use
+			gPhotoAlbum, err = client.Albums.Create(ctx, localParentName)
+			if err != nil {
+				return err
+			}
+			ftgExistingAlbums = append(ftgExistingAlbums, *gPhotoAlbum)
+		}
+
+		// Upload file to folder
+		uploadItem, err := client.UploadFileToAlbum(ctx, gPhotoAlbum.ID, path)
+		return err
+
+		return nil
+	})
+
+	return nil
+}
+
+func main() {
+	config := GetAppConfig()
+
+	SortLocalFlickrAlbums(config.PhotoDirPath, config.FlickrJsonPath)
+
+	gPhotoAuth := GetGPhotoAuthFromFile(config.GPhotoAuthJsonPath)
+	FromPCtoGPhotos(config.PhotoDirPath, gPhotoAuth)
 }

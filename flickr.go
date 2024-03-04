@@ -22,12 +22,7 @@ type Album struct {
 	Photos      []string `json:"photos"`
 }
 
-func CheckError(e error) {
-	if e != nil {
-		panic(e)
-	}
-}
-
+// Reads the JSON from flickr's archive download
 func ReadFlickrAlbums(file string) Albums {
 	data, err := ioutil.ReadFile(file)
 	CheckError(err)

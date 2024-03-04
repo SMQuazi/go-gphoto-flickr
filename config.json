@@ -1,4 +1,5 @@
 {
-  "PhotoPath": "D:\\Flickr 20210602\\data-download-copy",
-  "GPhotoAPIPath": "F:\\G_Photos_API.json"
+  "PhotoDirPath": "D:\\Flickr 20210602\\data-download-copy",
+  "GPhotoAuthJsonPath": "F:\\G_Photos_API.json",
+  "FlickrJsonPath": "./albums.json"
 }
